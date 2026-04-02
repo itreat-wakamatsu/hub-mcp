@@ -5,7 +5,7 @@ import { encrypt, decrypt } from '../crypto/index.js';
 // ─── Chatwork OAuth ────────────────────────────────────
 const CW_AUTH_URL = 'https://www.chatwork.com/packages/oauth2/login.php';
 const CW_TOKEN_URL = 'https://oauth.chatwork.com/token';
-const CW_SCOPES = 'rooms.all:read_write contacts.all:read_only users.all:read_only';
+const CW_SCOPES = 'rooms.all:read_write contacts.all:read users.all:read';
 
 // ─── Backlog OAuth ─────────────────────────────────────
 function backlogUrls() {
