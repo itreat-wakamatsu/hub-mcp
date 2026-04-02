@@ -1,26 +1,21 @@
 import { z } from 'zod';
-import { getCredentialsByService } from '../../db/index.js';
-import { decrypt } from '../../crypto/index.js';
+import { getAccessToken } from '../../auth/oauth.js';
 
-function getConfig(userId: string): { baseUrl: string; apiKey: string } {
-  const enc = getCredentialsByService(userId, 'backlog');
-  if (!enc.space || !enc.api_key) {
-    throw new Error('Backlog のスペースIDまたはAPIキーが設定されていません。設定画面から登録してください。');
-  }
-  return {
-    baseUrl: `https://${decrypt(enc.space)}.backlog.com/api/v2`,
-    apiKey: decrypt(enc.api_key),
-  };
+function getBaseUrl(): string {
+  const space = process.env.BACKLOG_SPACE;
+  if (!space) throw new Error('BACKLOG_SPACE が未設定です');
+  return `https://${space}.backlog.com/api/v2`;
 }
 
-async function backlogFetch(baseUrl: string, apiKey: string, path: string, opts?: RequestInit) {
-  const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${baseUrl}${path}${sep}apiKey=${apiKey}`, opts);
+async function bl(userId: string, path: string, opts?: RequestInit) {
+  const token = await getAccessToken(userId, 'backlog');
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    ...opts,
+    headers: { 'Authorization': `Bearer ${token}`, ...(opts?.headers ?? {}) },
+  });
   if (!res.ok) throw new Error(`Backlog API エラー [${res.status}]: ${await res.text()}`);
   return res.json();
 }
-
-// ─── Tool definitions ──────────────────────────────────
 
 export const backlogTools = [
   {
@@ -28,8 +23,7 @@ export const backlogTools = [
     description: 'Backlogの自分のプロフィール情報を取得します',
     schema: {},
     async handler(userId: string, _input: Record<string, never>) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      return JSON.stringify(await backlogFetch(baseUrl, apiKey, '/users/myself'), null, 2);
+      return JSON.stringify(await bl(userId, '/users/myself'), null, 2);
     },
   },
   {
@@ -41,14 +35,13 @@ export const backlogTools = [
     },
     async handler(userId: string, input: { count?: number; project_key?: string }) {
       const count = input.count ?? 20;
-      const { baseUrl, apiKey } = getConfig(userId);
-      const me = await backlogFetch(baseUrl, apiKey, '/users/myself') as { id: number };
+      const me = await bl(userId, '/users/myself') as { id: number };
       let path = `/issues?assigneeId[]=${me.id}&statusId[]=1&statusId[]=2&statusId[]=3&count=${count}`;
       if (input.project_key) {
-        const proj = await backlogFetch(baseUrl, apiKey, `/projects/${input.project_key}`) as { id: number };
+        const proj = await bl(userId, `/projects/${input.project_key}`) as { id: number };
         path += `&projectId[]=${proj.id}`;
       }
-      const data = await backlogFetch(baseUrl, apiKey, path) as {
+      const data = await bl(userId, path) as {
         issueKey: string; summary: string; status: { name: string };
         assignee: { name: string } | null; dueDate: string | null;
       }[];
@@ -65,8 +58,7 @@ export const backlogTools = [
       issue_key: z.string().describe('課題キー（例: MYPROJECT-123）'),
     },
     async handler(userId: string, input: { issue_key: string }) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      return JSON.stringify(await backlogFetch(baseUrl, apiKey, `/issues/${input.issue_key}`), null, 2);
+      return JSON.stringify(await bl(userId, `/issues/${input.issue_key}`), null, 2);
     },
   },
   {
@@ -84,9 +76,8 @@ export const backlogTools = [
       project_key: string; summary: string; description?: string;
       issue_type_name?: string; priority?: string; due_date?: string;
     }) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      const proj = await backlogFetch(baseUrl, apiKey, `/projects/${input.project_key}`) as { id: number };
-      const issueTypes = await backlogFetch(baseUrl, apiKey, `/projects/${input.project_key}/issueTypes`) as { id: number; name: string }[];
+      const proj = await bl(userId, `/projects/${input.project_key}`) as { id: number };
+      const issueTypes = await bl(userId, `/projects/${input.project_key}/issueTypes`) as { id: number; name: string }[];
       const issueType = input.issue_type_name
         ? (issueTypes.find(t => t.name === input.issue_type_name) ?? issueTypes[0])
         : issueTypes[0];
@@ -100,7 +91,7 @@ export const backlogTools = [
       });
       if (input.description) body.append('description', input.description);
       if (input.due_date) body.append('dueDate', input.due_date);
-      const result = await backlogFetch(baseUrl, apiKey, '/issues', {
+      const result = await bl(userId, '/issues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
@@ -116,8 +107,7 @@ export const backlogTools = [
       content: z.string().min(1).describe('コメント本文'),
     },
     async handler(userId: string, input: { issue_key: string; content: string }) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      const result = await backlogFetch(baseUrl, apiKey, `/issues/${input.issue_key}/comments`, {
+      const result = await bl(userId, `/issues/${input.issue_key}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ content: input.content }).toString(),
@@ -132,11 +122,7 @@ export const backlogTools = [
       count: z.number().max(100).optional().default(20).describe('取得件数（最大100）'),
     },
     async handler(userId: string, input: { count?: number }) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      return JSON.stringify(
-        await backlogFetch(baseUrl, apiKey, `/notifications?count=${input.count ?? 20}`),
-        null, 2,
-      );
+      return JSON.stringify(await bl(userId, `/notifications?count=${input.count ?? 20}`), null, 2);
     },
   },
   {
@@ -144,8 +130,7 @@ export const backlogTools = [
     description: '自分が参加しているBacklogプロジェクト一覧を取得します',
     schema: {},
     async handler(userId: string, _input: Record<string, never>) {
-      const { baseUrl, apiKey } = getConfig(userId);
-      const data = await backlogFetch(baseUrl, apiKey, '/projects') as { id: number; projectKey: string; name: string }[];
+      const data = await bl(userId, '/projects') as { id: number; projectKey: string; name: string }[];
       return JSON.stringify(data.map(p => ({ id: p.id, key: p.projectKey, name: p.name })), null, 2);
     },
   },

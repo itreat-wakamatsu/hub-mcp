@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/user/.claude/skills/chatwork/**)",
+      "Read(//Users/user/.claude/skills/backlog/**)",
+      "Read(//Users/user/.claude/skills/circleback-cli/**)",
+      "Read(//Users/user/.agents/skills/gws-gmail/**)",
+      "Read(//Users/user/.agents/skills/gws-shared/**)",
+      "Bash(npm run:*)",
+      "Skill(git-commit-helper)"
+    ]
+  }
+}

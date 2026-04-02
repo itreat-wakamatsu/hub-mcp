@@ -1,53 +1,32 @@
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware.js';
-import { setCredential, getCredentialsByService, deleteCredential } from '../../db/index.js';
-import { encrypt, decrypt } from '../../crypto/index.js';
+import { isConnected } from '../../auth/oauth.js';
 import type { AppEnv } from '../app.js';
 import type { User } from '../../db/index.js';
 
 const app = new Hono<AppEnv>();
 app.use('*', requireAuth);
 
-app.get('/', async (c) => {
+app.get('/', (c) => {
   const user = c.get('user') as User;
-  const services = ['chatwork', 'backlog'] as const;
-  const saved: Record<string, Record<string, string>> = {};
-  for (const svc of services) {
-    const enc = getCredentialsByService(user.id, svc);
-    saved[svc] = Object.fromEntries(
-      Object.entries(enc).map(([k, v]) => {
-        try { return [k, decrypt(v)]; } catch { return [k, '']; }
-      })
-    );
-  }
-  return c.html(settingsPage(user, saved, c.req.query('saved') === '1'));
-});
-
-app.post('/save', async (c) => {
-  const user = c.get('user') as User;
-  const body = await c.req.parseBody();
-  const fields: [string, string, string][] = [
-    ['chatwork', 'api_token', body['chatwork_api_token'] as string],
-    ['backlog', 'space', body['backlog_space'] as string],
-    ['backlog', 'api_key', body['backlog_api_key'] as string],
-  ];
-  for (const [service, key, value] of fields) {
-    if (value?.trim()) setCredential(user.id, service, key, encrypt(value.trim()));
-  }
-  return c.redirect('/settings?saved=1');
-});
-
-app.post('/delete', async (c) => {
-  const user = c.get('user') as User;
-  const body = await c.req.parseBody();
-  const service = body['service'] as string;
-  const key = body['key'] as string;
-  if (service && key) deleteCredential(user.id, service, key);
-  return c.redirect('/settings');
+  const connected = {
+    chatwork: isConnected(user.id, 'chatwork'),
+    backlog: isConnected(user.id, 'backlog'),
+  };
+  const msg = c.req.query('connected');
+  return c.html(settingsPage(user, connected, msg));
 });
 
 // ─── HTML ─────────────────────────────────────────────
-function settingsPage(user: User, saved: Record<string, Record<string, string>>, showSaved: boolean): string {
+function settingsPage(
+  user: User,
+  connected: { chatwork: boolean; backlog: boolean },
+  connectedMsg?: string,
+): string {
+  const alert = connectedMsg
+    ? `<div class="alert">✓ ${connectedMsg === 'chatwork' ? 'Chatwork' : 'Backlog'} との連携が完了しました</div>`
+    : '';
+
   return /* html */`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -65,18 +44,21 @@ function settingsPage(user: User, saved: Record<string, Record<string, string>>,
     main { max-width: 800px; margin: 32px auto; padding: 0 16px; }
     .card { background: #fff; border-radius: 8px; padding: 24px; margin-bottom: 24px;
             box-shadow: 0 1px 4px rgba(0,0,0,.1); }
-    .card h2 { margin-top: 0; font-size: 18px; border-bottom: 1px solid #eee; padding-bottom: 12px; }
-    label { display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500; }
-    input[type=text], input[type=password] {
-      width: 100%; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px;
-      font-size: 14px; margin-bottom: 16px; }
-    .btn { background: #2563eb; color: #fff; border: none; padding: 10px 20px;
-           border-radius: 6px; cursor: pointer; font-size: 14px; }
-    .btn:hover { background: #1d4ed8; }
-    .btn-danger { background: #dc2626; }
+    .card h2 { margin-top: 0; font-size: 18px; border-bottom: 1px solid #eee; padding-bottom: 12px;
+               display: flex; align-items: center; gap: 10px; }
+    .badge { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: normal; }
+    .badge-connected { background: #d1fae5; color: #065f46; }
+    .badge-disconnected { background: #fee2e2; color: #991b1b; }
+    .btn { display: inline-block; padding: 10px 20px; border-radius: 6px; cursor: pointer;
+           font-size: 14px; font-weight: 500; border: none; text-decoration: none; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-danger { background: #dc2626; color: #fff; }
     .btn-danger:hover { background: #b91c1c; }
-    .saved-val { font-size: 13px; color: #6b7280; margin-bottom: 16px;
-                 display: flex; align-items: center; gap: 8px; }
+    .btn-outline { background: #fff; color: #374151; border: 1px solid #d1d5db; }
+    .btn-outline:hover { background: #f9fafb; }
+    .service-row { display: flex; justify-content: space-between; align-items: center; }
+    .service-info p { margin: 4px 0; font-size: 14px; color: #6b7280; }
     .alert { background: #d1fae5; color: #065f46; border-radius: 6px;
              padding: 12px 16px; margin-bottom: 24px; font-size: 14px; }
     .nav-links { margin-top: 24px; display: flex; gap: 16px; align-items: center; }
@@ -90,58 +72,63 @@ function settingsPage(user: User, saved: Record<string, Record<string, string>>,
   <span>${user.name}（${user.email}）</span>
 </header>
 <main>
-  ${showSaved ? '<div class="alert">✓ 設定を保存しました</div>' : ''}
+  ${alert}
 
-  <form method="POST" action="/settings/save">
-    <div class="card">
-      <h2>Chatwork</h2>
-      <p style="font-size:14px;color:#6b7280">
-        Chatwork の「設定」→「サービス連携」→「APIトークン」からコピーしてください。
-      </p>
-      <label>APIトークン</label>
-      ${saved.chatwork?.api_token
-        ? `<div class="saved-val">✓ 設定済み
-            <form class="inline" method="POST" action="/settings/delete">
+  <!-- Chatwork -->
+  <div class="card">
+    <h2>
+      Chatwork
+      <span class="badge ${connected.chatwork ? 'badge-connected' : 'badge-disconnected'}">
+        ${connected.chatwork ? '✓ 連携済み' : '未連携'}
+      </span>
+    </h2>
+    <div class="service-row">
+      <div class="service-info">
+        ${connected.chatwork
+          ? '<p>Chatworkと連携されています。メッセージの送受信・タスク管理が利用できます。</p>'
+          : '<p>ボタンをクリックするとChatworkの認証画面が開きます。</p>'
+        }
+      </div>
+      <div>
+        ${connected.chatwork
+          ? /* html */`
+            <form class="inline" method="POST" action="/oauth/disconnect">
               <input type="hidden" name="service" value="chatwork">
-              <input type="hidden" name="key" value="api_token">
-              <button class="btn btn-danger" style="padding:4px 10px;font-size:12px">削除</button>
-            </form>
-           </div>`
-        : `<input type="password" name="chatwork_api_token" placeholder="xxxxxxxxxxxxxxxxxxxx">`
-      }
+              <button type="submit" class="btn btn-outline">連携解除</button>
+            </form>`
+          : `<a href="/oauth/chatwork" class="btn btn-primary">Chatworkと連携する</a>`
+        }
+      </div>
     </div>
+  </div>
 
-    <div class="card">
-      <h2>Backlog</h2>
-      <p style="font-size:14px;color:#6b7280">
-        Backlog の「個人設定」→「API」からAPIキーを取得してください。
-      </p>
-      <label>スペースID（例：mycompany）</label>
-      ${saved.backlog?.space
-        ? `<div class="saved-val">✓ 設定済み: ${saved.backlog.space}
-            <form class="inline" method="POST" action="/settings/delete">
+  <!-- Backlog -->
+  <div class="card">
+    <h2>
+      Backlog
+      <span class="badge ${connected.backlog ? 'badge-connected' : 'badge-disconnected'}">
+        ${connected.backlog ? '✓ 連携済み' : '未連携'}
+      </span>
+    </h2>
+    <div class="service-row">
+      <div class="service-info">
+        ${connected.backlog
+          ? '<p>Backlogと連携されています。課題の参照・作成・コメントが利用できます。</p>'
+          : '<p>ボタンをクリックするとBacklogの認証画面が開きます。</p>'
+        }
+      </div>
+      <div>
+        ${connected.backlog
+          ? /* html */`
+            <form class="inline" method="POST" action="/oauth/disconnect">
               <input type="hidden" name="service" value="backlog">
-              <input type="hidden" name="key" value="space">
-              <button class="btn btn-danger" style="padding:4px 10px;font-size:12px">削除</button>
-            </form>
-           </div>`
-        : `<input type="text" name="backlog_space" placeholder="mycompany">`
-      }
-      <label>APIキー</label>
-      ${saved.backlog?.api_key
-        ? `<div class="saved-val">✓ 設定済み
-            <form class="inline" method="POST" action="/settings/delete">
-              <input type="hidden" name="service" value="backlog">
-              <input type="hidden" name="key" value="api_key">
-              <button class="btn btn-danger" style="padding:4px 10px;font-size:12px">削除</button>
-            </form>
-           </div>`
-        : `<input type="password" name="backlog_api_key" placeholder="xxxxxxxxxxxxxxxxxxxx">`
-      }
+              <button type="submit" class="btn btn-outline">連携解除</button>
+            </form>`
+          : `<a href="/oauth/backlog" class="btn btn-primary">Backlogと連携する</a>`
+        }
+      </div>
     </div>
-
-    <button type="submit" class="btn">保存する</button>
-  </form>
+  </div>
 
   <div class="nav-links">
     <a href="/connect">▶ MCPの接続設定を確認する</a>
