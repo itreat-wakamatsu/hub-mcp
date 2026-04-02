@@ -1,0 +1,15 @@
+[Unit]
+Description=hub-mcp server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/var/www/hub-mcp
+EnvironmentFile=/var/www/hub-mcp/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
